@@ -149,7 +149,14 @@ enum POCSelfTest {
             )
         }
 
-        lines.append("BINDINGS: \(bindings.count)")
+        // 括号里的两个数是**展示投影**的划分（`pendingBindings` / `completedBindings`）。
+        // 下面逐条列表仍是**存储顺序** —— 那三处取证输出依赖它，不能动；
+        // 这两个数只是让"投影是对 bindings 的划分"这件事进入取证链。
+        let split = await MainActor.run {
+            (pending: TodoStore.shared.pendingBindings.count,
+             done: TodoStore.shared.completedBindings.count)
+        }
+        lines.append("BINDINGS: \(bindings.count) (pending=\(split.pending) done=\(split.done))")
         for binding in bindings {
             lines.append(
                 "  - id=\(binding.id.uuidString) apps=[\(binding.displayAppNames)] "

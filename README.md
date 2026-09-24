@@ -107,10 +107,13 @@ open FamilyActivityPoC.xcodeproj
 
 ### 3. 在 App 里建待办
 
-回到本 App，「待办」页 → 点「选择 App」→ 从**检测到的 App** 列表里勾（可以勾多个，
-比如「回消息」同时绑微信和企业微信）→ 填待办内容 → 添加。
+回到本 App，「待办」页 → 点右上角 **＋** → 填待办内容 → 点「选择 App」，
+从**检测到的 App** 列表里勾（可以勾多个，比如「回消息」同时绑微信和企业微信）→「添加」。
 
 列表里没有你要的 App，就先去打开它一次；打开过还没有，说明第 2 步没勾上它。
+
+待办列表分两段：**待办中**在上（左滑标记完成，右滑删除），**已完成**在下、默认折叠。
+点一条待办可以改它绑的 App。顶部的「自动化接线指引」和导航栏右上角的 ❓ 是同一个入口。
 
 > 一个 App 只能属于一条待办 —— 否则两条待办同时命中会重复提醒。
 > 从别的待办手里把 App 抢过来是允许的，被抢的那条会显示橙色「未选择 App（不会提醒）」，不会被删掉。
@@ -131,8 +134,10 @@ FamilyActivityPoC/           Xcode 工程（objectVersion 77 的文件系统同�
 └── FamilyActivityPoC/
     ├── FamilyActivityPoCApp.swift   入口：注册通知类别、设 delegate、无头自检钩子
     ├── ContentView.swift            两个 Tab：「待办」/「日志」；文件级 POCFormat 供两处共用
-    ├── SetupGuideView.swift         接线指引 sheet：四步 + 「运行前询问」警告 + 排查清单
-    ├── AppPickerSheet.swift         选择 App sheet：多选、已占用置灰并显示占用者
+    ├── SetupGuideView.swift         接线指引 sheet：五步 + 「运行前询问」警告 + 排查清单
+    ├── NewTodoSheet.swift           新增待办 sheet（右上角 ＋）：内容 + 内推「选择 App」
+    ├── AppPickerSheet.swift         选择 App：可复用的 AppPickerList（多选、已占用置灰）
+    │                                   + 一个 sheet 外壳（改绑已有待办走它）
     ├── AppChipsView.swift           绑定的 App 芯片 + 自写的换行 Layout
     ├── TodoBinding.swift            绑定模型（appNames 集合 + v1 迁移 + 宽容解码）
     ├── TodoStore.swift              绑定的持久化与「一个 App 只属于一条待办」不变量

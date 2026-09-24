@@ -66,69 +66,64 @@ private struct TodoTab: View {
     /// 取决于渲染时序，是个很难查的坑。用一个枚举把"现在该弹哪个"说明白，就不用赌它。
     private enum Sheet: Identifiable {
         case guide
-        /// nil = 在给**还没建**的待办选 App；有值 = 在改这条已有待办
-        case picker(UUID?)
+        /// 新增待办。输入框、草稿、选择器全在 `NewTodoSheet` 里面，本视图不持有它们。
+        case newTodo
+        /// 只用于**已有**待办的改绑。新建流程走 `NewTodoSheet` 里 push 的选择器，
+        /// 不再经过这里，所以 id 不再是 optional。
+        case picker(UUID)
 
         var id: String {
             switch self {
             case .guide: "guide"
-            case .picker(let id): "picker-\(id?.uuidString ?? "draft")"
+            case .newTodo: "newTodo"
+            case .picker(let id): "picker-\(id.uuidString)"
             }
         }
     }
 
     @State private var sheet: Sheet?
-    @State private var newTodoText = ""
-    @State private var draftAppNames: Set<String> = []
-    /// 待办输入框的焦点。
-    ///
-    /// **为什么必须显式管它**：这是个 `axis: .vertical` 的多行输入框，
-    /// 回车键的作用是**换行**而不是提交，List 里点空白处也不会自动收起键盘 ——
-    /// 也就是说，只有这个状态能提供"收起键盘"这个动作，没有它用户就没有退路。
-    @FocusState private var todoFieldFocused: Bool
+    /// 「已完成」那段是否展开。默认收着；不落盘、不跨启动保留。
+    @State private var showCompleted = false
 
     var body: some View {
         NavigationStack {
             List {
                 wiringSection
                 permissionSection
-                addSection
-                bindingSection
+                pendingSection
+                // 已完成为空时**整段不出现**：「已完成（0）」点开什么都没有，是纯噪音；
+                // 而且这样一来，没有已完成条目时界面与改造前一模一样。
+                if !store.completedBindings.isEmpty {
+                    completedSection
+                }
             }
             .navigationTitle("待办提醒")
-            // 往下滑也能收起键盘。键盘上的「完成」是主要出口，这一条是顺手的第二条。
-            .scrollDismissesKeyboard(.interactively)
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
+                // 一个 `ToolbarItemGroup` 而不是两个 `ToolbarItem`：组内按声明顺序从左到右，
+                // 于是 ＋ 确定落在最右（"右上角 ＋"）。两个同 placement 的独立 item
+                // 横向顺序由 bar 决定，而且 iOS 26 下会渲染成两个各带间隙的玻璃胶囊，
+                // 看起来不像相邻的两个图标。
+                ToolbarItemGroup(placement: .topBarTrailing) {
                     Button { sheet = .guide } label: {
                         Label("接线指引", systemImage: "questionmark.circle")
                     }
-                }
-            }
-            .toolbar {
-                // 键盘正上方那个「完成」。
-                //
-                // 挂在 `List` 上而不是输入框上：`.keyboard` 属于另一条工具栏，
-                // 位置由键盘决定，挂在哪一层都能生效；挂在 List 上不会被行内布局影响。
-                //
-                // 不用 `.submitLabel(.done)` 之类的办法：多行输入框上回车是换行，
-                // `onSubmit` 根本不会触发，只能显式改焦点。
-                ToolbarItemGroup(placement: .keyboard) {
-                    Spacer()
-                    Button("完成") { todoFieldFocused = false }
+                    Button { sheet = .newTodo } label: {
+                        Label("新增待办", systemImage: "plus")
+                    }
                 }
             }
             .sheet(item: $sheet) { which in
                 switch which {
                 case .guide:
                     SetupGuideView()
+                case .newTodo:
+                    NewTodoSheet(store: store, seenStore: seenStore)
                 case .picker(let id):
                     AppPickerSheet(
-                        title: id == nil ? "选择 App" : "改绑 App",
+                        title: "改绑 App",
                         apps: seenStore.detectedApps,
                         claimed: store.claimedAppNames(excludingID: id),
-                        currentNames: id.flatMap { store.binding(withID: $0)?.appNames }
-                            ?? Array(draftAppNames),
+                        currentNames: store.binding(withID: id)?.appNames ?? [],
                         onCommit: { commit($0, for: id) }
                     )
                 }
@@ -136,15 +131,11 @@ private struct TodoTab: View {
         }
     }
 
-    /// 选择器按下的「完成」。
+    /// 改绑弹窗按下「完成」：立刻写回。
     ///
-    /// 新建流程只改草稿（点「添加待办」才落库），已有待办则立刻写回 ——
-    /// 两边的差别只在这一处，列表本身是同一个组件。
-    private func commit(_ selection: Set<String>, for id: UUID?) {
-        guard let id else {
-            draftAppNames = selection
-            return
-        }
+    /// 只有**已有**待办走这里。新建流程在 `NewTodoSheet` 里就地攒草稿，选了 App 也不落库，
+    /// 直到点「添加」才 `store.add` —— 所以这里不再有"改草稿还是改库"的分支。
+    private func commit(_ selection: Set<String>, for id: UUID) {
         guard let binding = store.binding(withID: id) else { return }
         store.update(id: id, appNames: selection.sorted(), todoText: binding.todoText)
     }
@@ -212,81 +203,79 @@ private struct TodoTab: View {
         }
     }
 
-    // MARK: 新增
+    // MARK: 待办中
 
-    private var canAdd: Bool {
-        !draftAppNames.isEmpty && !newTodoText.trimmingCharacters(in: .whitespaces).isEmpty
-    }
-
-    private var addSection: some View {
+    private var pendingSection: some View {
         Section {
-            TextField("待办内容，例如：给张总回消息", text: $newTodoText, axis: .vertical)
-                .lineLimit(1...3)
-                .focused($todoFieldFocused)
-
-            Button {
-                // 收起键盘再弹 sheet：否则键盘会留在 sheet 后面，
-                // 关掉 sheet 之后还杵在那儿。
-                todoFieldFocused = false
-                sheet = .picker(nil)
-            } label: {
-                HStack {
-                    Text("选择 App")
-                        .foregroundStyle(.primary)
-                    Spacer()
-                    Text(draftAppNames.isEmpty ? "未选择" : "已选 \(draftAppNames.count) 个")
-                        .foregroundStyle(draftAppNames.isEmpty ? Color.secondary : Color.accentColor)
-                }
-            }
-
-            if !draftAppNames.isEmpty {
-                AppChipsView(names: draftAppNames.sorted())
-            }
-
-            Button("添加待办") {
-                store.add(appNames: Array(draftAppNames), todoText: newTodoText)
-                newTodoText = ""
-                draftAppNames = []
-                todoFieldFocused = false   // 加完了就把键盘收掉，否则屏幕还占着一半
-            }
-            .disabled(!canAdd)
-        } header: {
-            Text("新增")
-        } footer: {
-            Text("App 只能从选择器里那个列表选 —— 名字由系统上报，不用手打，也就不会拼错。"
-                 + "一条待办可以绑多个 App，比如「回消息」同时绑微信和企业微信。")
-        }
-    }
-
-    // MARK: 待办列表
-
-    private var bindingSection: some View {
-        Section {
-            if store.bindings.isEmpty {
-                Text("还没有待办。")
+            if store.pendingBindings.isEmpty {
+                // 两种情况分开说：一条待办都没有，vs 只剩已完成的。
+                // 后者不能只留一个光秃秃的 header —— 看起来像渲染坏了。
+                Text(store.completedBindings.isEmpty ? "还没有待办。" : "没有待办中的条目。")
                     .foregroundStyle(.secondary)
             } else {
-                ForEach(store.bindings) { binding in
-                    bindingRow(binding)
-                        .swipeActions(edge: .trailing) {
-                            Button("删除", role: .destructive) { store.remove(id: binding.id) }
-                        }
-                        .swipeActions(edge: .leading) {
-                            if binding.isDone {
-                                Button("恢复待办") { store.markPending(id: binding.id) }
-                                    .tint(.orange)
-                            } else {
-                                Button("标记完成") { store.markDone(id: binding.id) }
-                                    .tint(.green)
-                            }
-                        }
+                ForEach(store.pendingBindings) { binding in
+                    row(binding)
                 }
             }
         } header: {
-            Text("待办（\(store.bindings.count)）")
+            Text("待办中（\(store.pendingBindings.count)）")
         } footer: {
-            Text("点一条可以改它绑的 App。左滑标记完成/恢复，右滑删除。")
+            Text("点一条可以改它绑的 App。左滑标记完成，右滑删除。")
         }
+    }
+
+    // MARK: 已完成（默认折叠）
+
+    /// 手搓折叠，不用 `DisclosureGroup`、也不用 `Section(isExpanded:)`：
+    /// - `DisclosureGroup` 在 List 里把内容当作**那一行的 content** 渲染，子行的 `swipeActions`
+    ///   不再表现为"对这一行滑动"，而这里必须有左滑「恢复待办」/右滑「删除」。
+    /// - `Section(isExpanded:)` 是平台原生的折叠 Section，但万一 header 的展开控件在某种
+    ///   list style 下不渲染，section 会变成**永久折叠且无法展开** —— 一个"看起来正常、
+    ///   内容永远消失"的失败。手搓十行，确定性优先。
+    private var completedSection: some View {
+        Section {
+            if showCompleted {
+                ForEach(store.completedBindings) { binding in
+                    row(binding)
+                }
+            }
+        } header: {
+            // 整行可点，而不是只有那个小箭头可点 —— 折叠条的点击目标就该有一行那么高。
+            Button { showCompleted.toggle() } label: {
+                HStack(spacing: 6) {
+                    Text("已完成（\(store.completedBindings.count)）")
+                    Image(systemName: showCompleted ? "chevron.down" : "chevron.forward")
+                        .font(.caption2)
+                    Spacer(minLength: 0)
+                }
+                .contentShape(Rectangle())
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .buttonStyle(.plain)          // 不加的话 header 会被渲染成链接蓝
+            .foregroundStyle(.secondary)
+        } footer: {
+            // footer 与内容无关地渲染 —— 收着的时候它也在。所以要显式条件化。
+            if showCompleted {
+                Text("左滑「恢复待办」把它放回待办中，右滑删除。")
+            }
+        }
+    }
+
+    /// 两段共用同一份行构造（与改造前逐字相同），所以"swipeActions 还能不能用"不存在。
+    private func row(_ binding: TodoBinding) -> some View {
+        bindingRow(binding)
+            .swipeActions(edge: .trailing) {
+                Button("删除", role: .destructive) { store.remove(id: binding.id) }
+            }
+            .swipeActions(edge: .leading) {
+                if binding.isDone {
+                    Button("恢复待办") { store.markPending(id: binding.id) }
+                        .tint(.orange)
+                } else {
+                    Button("标记完成") { store.markDone(id: binding.id) }
+                        .tint(.green)
+                }
+            }
     }
 
     private func bindingRow(_ binding: TodoBinding) -> some View {

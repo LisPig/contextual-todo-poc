@@ -85,6 +85,28 @@ final class TodoStore {
         return result
     }
 
+    // MARK: - 展示投影（只读，绝不回写存储顺序）
+
+    /// 待办列表的**展示分组**。纯投影：不排序、不改 `bindings`、不落盘。
+    ///
+    /// **为什么必须是投影**：`bindings` 的数组顺序同时是三处**取证输出**的顺序 ——
+    /// `POCSelfTest.dumpState()` 的 BINDINGS 段、`TodoReminder.snapshot()` 那行
+    /// `before=/after=`、`POCSelfTest.claimTest()` 的逐条快照。在存储上按 `isDone` 排一遍，
+    /// 那三处的文本会变、磁盘上的字节顺序也可能跟着变，于是"改了个列表样式"会表现成
+    /// "不变量测试坏了"。要改展示就在这里改。
+    ///
+    /// 用 `filter` 而不是 `sorted`：`filter` 是**稳定划分**，组内保持插入顺序 ——
+    /// 也就是今天看到什么顺序、改完还是什么顺序，只有跨组的那一条会换段。
+    /// `sorted` 不行：Swift 的 `sorted` 不保证稳定（比对 `sanitizeInvariant()` 里那个
+    /// 没有 tiebreaker 的 `createdAt` 比较器），而这里也没有第二个字段能在同秒创建时定序 ——
+    /// 注意模型里**没有 `completedAt`**，所以"已完成的按完成时间倒序"当前做不到，
+    /// 那需要加字段 + 迁移，是另一个改动。
+    ///
+    /// 两个条件互为补集，所以 `pendingBindings.count + completedBindings.count == bindings.count`
+    /// 恒成立，同一条待办不可能同时出现在两段里。
+    var pendingBindings: [TodoBinding] { bindings.filter { !$0.isDone } }
+    var completedBindings: [TodoBinding] { bindings.filter(\.isDone) }
+
     // MARK: - 变更
 
     /// 新增一条待办。App 名或待办内容为空则返回 nil。
