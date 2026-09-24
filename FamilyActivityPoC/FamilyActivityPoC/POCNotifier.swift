@@ -70,9 +70,14 @@ enum TodoReminder {
     /// 发出一条待办提醒。
     ///
     /// - Parameters:
+    ///   - identifier: 投递标识符。**必须稳定**，这里传待办自身的 id。
+    ///     iOS 的规则是「identifier 相同 → 覆盖旧通知；不同 → 新建一条」。
+    ///     用随机 UUID 会让每次打开目标 App 都在通知中心留下一条，很快堆成十几条重复
+    ///     （实测堆到 16 条）。改用待办 id 后只保留最新一条，
+    ///     **而横幅照常每次都弹** —— 产品的提醒规则完全不变，只是不再堆积。
     ///   - appName: 绑定的 App 名，写进 `userInfo` 以便点击时反查
     ///   - todoText: 待办内容，即通知正文
-    static func post(appName: String, todoText: String) async {
+    static func post(identifier: String, appName: String, todoText: String) async {
         // 发送前先记下系统侧的通知设置。若真机上横幅不显示，这一行能直接指出
         // 是"权限/样式"被改了，而不是我们的代码没发出去。
         let settings = await UNUserNotificationCenter.current().notificationSettings()
@@ -86,7 +91,7 @@ enum TodoReminder {
         content.userInfo = [appNameKey: appName]
 
         let request = UNNotificationRequest(
-            identifier: UUID().uuidString,
+            identifier: identifier,
             content: content,
             trigger: nil    // 立即送达
         )

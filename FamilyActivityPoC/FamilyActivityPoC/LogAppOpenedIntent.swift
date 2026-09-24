@@ -65,7 +65,13 @@ struct LogAppOpenedIntent: AppIntent {
         POCTrace.log("perform app=\"\(display)\" -> 命中待办 \"\(binding.todoText)\"，发提醒")
 
         await TodoReminder.requestAuthorization()
-        await TodoReminder.post(appName: binding.appName, todoText: binding.todoText)
+        // 用待办自身的 id 作投递标识符：同一条待办反复提醒时只保留最新一条通知，
+        // 不会在通知中心堆重复（见 POCNotifier.post 的参数说明）。
+        await TodoReminder.post(
+            identifier: binding.id.uuidString,
+            appName: binding.appName,
+            todoText: binding.todoText
+        )
 
         return .result()
     }
