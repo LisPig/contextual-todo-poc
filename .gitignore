@@ -1,0 +1,19 @@
+# macOS
+.DS_Store
+
+# Xcode：用户/机器相关，不应进版本库
+xcuserdata/
+*.xcuserstate
+*.xcscmblueprint
+
+# 构建产物
+build/
+DerivedData/
+*.ipa
+*.dSYM
+*.dSYM.zip
+*.app
+
+# Swift Package Manager
+.swiftpm/
+.build/
