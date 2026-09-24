@@ -14,18 +14,23 @@ FamilyActivityPoC/
 ├── FamilyActivityPoC.xcodeproj/project.pbxproj   # 手写；objectVersion 77，file-system-synchronized 组
 └── FamilyActivityPoC/
     ├── FamilyActivityPoCApp.swift   # @main；注册通知类别 + delegate
-    ├── ContentView.swift            # 两个标签页：待办（绑定管理）/ 日志（触发记录）
-    ├── TodoBinding.swift            # **产品核心模型**：App 名 ↔ 待办文本 绑定
-    ├── TodoStore.swift              # 绑定的持久化 + 按 App 名查未完成待办
+    ├── ContentView.swift            # 两个标签页：待办（绑定管理）/ 日志（触发记录 + 检测到的 App）
+    ├── SetupGuideView.swift         # v2：接线指引 sheet（四步＋「运行前询问」警告＋排查清单）
+    ├── AppPickerSheet.swift         # v2：选择 App sheet（多选、已占用置灰）
+    ├── AppChipsView.swift           # v2：绑定芯片 + 自写的换行 Layout
+    ├── TodoBinding.swift            # **产品核心模型**：App 名集合 ↔ 待办文本 绑定（含 v1 迁移）
+    ├── TodoStore.swift              # 绑定的持久化 + 查未完成待办 + 「一个 App 只属于一条待办」不变量
+    ├── SeenApp.swift                # v2：见过的 App（系统上报过哪些名字）
+    ├── SeenAppStore.swift           # v2：上者的持久化 + 上限 + 淘汰 + 自识别本 App
     ├── ActivityLog.swift            # 事件日志模型；source 区分 shortcutIntent / deviceActivity
     ├── ActivityLogStore.swift       # 沙盒 Application Support 持久化（非 App Group）
     ├── TodoReminder.swift           # TodoReminder（本地通知出口）+ TodoNotificationHandler（按钮回调）
     ├── LogAppOpenedIntent.swift     # AppIntent + AppShortcutsProvider
-    ├── POCSelfTest.swift            # 无头自检开关（见 2e）
+    ├── POCSelfTest.swift            # 无头自检开关（见 2e / 2h）
     └── POCTrace.swift               # 取证用事件追踪，带 PID/时间戳（排查 2f 类问题）
 ```
 
-### 两处相对 `00-feasibility-analysis.md` 初稿的主动偏离
+### 三处相对 `00-feasibility-analysis.md` 初稿的主动偏离
 
 1. **不用 App Group**（初稿 C 节原设计）。Track B 无 extension，Intent 与 UI 同进程同容器，
    不存在跨进程共享需求，App Group 是为"主 App ↔ Extension"引入的。改为直接写沙盒
@@ -33,6 +38,9 @@ FamilyActivityPoC/
 2. **新增无头自检开关**（初稿未提）。`--poc-self-test` 启动参数会调用与 Shortcuts 自动化
    **完全相同**的 `LogAppOpenedIntent.perform()`，使"记录是否落盘"可被脚本化验证，
    无需 XCUITest 或辅助功能权限。
+3. **v2 起 App 名由系统上报，不再手输**（初稿假设用户填 App 名）。
+   代价是多了一个 `SeenAppStore`（记录系统上报过的名字），换来的是消灭
+   "本 App 与自动化两处拼写必须一致"这一类静默失败。见 2h。
 
 ---
 
@@ -371,6 +379,138 @@ CATEGORY TODO_REMINDER ACTIONS: [TODO_ACTION_DONE = "完成"; TODO_ACTION_LATER 
 
 ---
 
+## 2h. v2 证据：集合化绑定、接线检测、以及三个真 bug
+
+v2 把"每绑一个 App 建一条自动化"压成"只建一条"，App 名改为从系统上报的列表里选。
+改动面覆盖数据模型（`appName` → `appNames`）、三个 store、通知解析路径与界面。
+**迁移写错的后果是"用户所有绑定静默消失"**，所以下面每一条都在模拟器上实跑过。
+除注明外，均为 iPhone 17 / iPhone 17 Pro Max 模拟器。
+
+### 数据迁移（`--poc-migration-test` ＋ 真容器实跑）
+
+没有测试 target（工程只有 app target），所以把 fixture 过**真实的解码器**，
+结果写进 `poc-state.txt`。7 个 fixture 全对，关键两条：
+
+| fixture | 期望 | 结果 |
+| --- | --- | --- |
+| 一条坏记录**夹在两条好的中间**（`isDone` 写成字符串） | 好的两条保住，坏的单独丢 | ✅ `解出 2 条，丢掉 1 条` |
+| 整个文件不是 JSON | 整体失败 → 兜底 `[]`（数据全丢，这条**必须**能区分出来） | ✅ 明确输出"整体解码失败" |
+
+第一条**实测确认了一个本来只是假设的行为**：`[LenientElement<T>]` 里 `try?` 失败后，
+JSON 解码器的游标**能恢复到数组的下一元素**（否则坏的后面那条也会跟着丢）。
+没有测试 target 的情况下，这个行为只能靠实跑确认，不能想当然。
+
+真容器实跑（把 v1 形状的 `todo-bindings.json` 写进去 → `--poc-dump-state`）：
+`appName:"微信"` → `appNames:["微信"]`；`"  QQ  "` → `["QQ"]`；畸形记录被单独丢掉，
+其余两条完好；追踪日志出现 `load dropped 1 malformed binding(s)`；
+**读完之后磁盘上的文件立刻被改写成规范的 v2 形状**（只写 `appNames`，不再写 `appName`）。
+
+> 这里踩过一个自己的坑：清洗后只在 `sanitizeInvariant()` 返回 true 时才 `save()`，
+> 结果"迁移读对了但没落盘"。修法是比较**文件原始字节**与重新编码后的字节
+> （拿已经洗过的内存值自己跟自己比永远相等）。三个 store 都有这个问题，一起改了。
+
+### `auth=notDetermined` 时必须"不发提醒且不挂起"（本版最重要的一条回归）
+
+**这是 v2 之前就存在的真 bug**，只是在旧形态下很少撞上。
+
+`LogAppOpenedIntent.perform()` 发货前会 `await TodoReminder.requestAuthorization()`。
+App 被 Shortcuts 在**后台**拉起时弹不出授权框，这个 await **永远不返回**（见 2e），
+`post()` 根本执行不到。以前只有命中绑定时才会走到；v2 改成"触发器勾选全部 App"后
+**每次切换 App 都会走到**，而免费账号 7 天重签让"重装"成为常态（重装会把权限打回未决定），
+于是症状变成"打开什么 App 都毫无反应"—— 正是这个功能要消灭的东西。
+
+改法：intent 路径只**查**不**问**（`canDeliver()`），未授权时只记追踪日志；
+`requestAuthorization()` 只保留在界面路径上调用。
+
+| 步骤（卸载重装后 `auth=notDetermined`） | 结果 |
+| --- | --- |
+| `--poc-self-test 企业微信`（该 App 有未完成待办） | ✅ 追踪日志 `perform app="企业微信" -> 命中待办但通知不可用(auth=0)，不发提醒` |
+| 4 秒后进程是否还在 | ✅ 还在 —— **没有挂死**（改之前会永久挂在这里） |
+| `DELIVERED NOTIFICATIONS` | ✅ `0` |
+| `SEEN APPS` | ✅ 非空 —— 接线检测**不依赖通知权限**，这一点很重要（否则未授权时接线警告会误报成"没接通"） |
+
+`--poc-grant-notifications` / 选项里的 `.provisional` 是验证期间临时加的入口，
+**已全部删除**，仓库里 `grep -rn "TEMP-VERIFY\|--poc-grant-notifications"` 为 0 命中。
+`.provisional` 也不该留在产品里：临时授权是**静默投递**（只进通知中心、不弹横幅），
+而横幅正是这个功能的全部 —— 用户按了授权却什么都看不到，比明确未授权更难查。
+
+### 多 App 绑定 ＋ 通知去重
+
+| 操作 | 结果 |
+| --- | --- |
+| 一条待办绑 `["微信","QQ"]`，先后触发微信、QQ | ✅ 两次都发文，`DELIVERED` 始终是 **1**（identifier 是待办 id，后一次覆盖前一次） |
+| 横幅标题 | ✅ `打开 QQ 时想起` —— 是**本次触发的那个 App**，不是数组里的第一个 |
+| `userInfo` | ✅ 同时带 `appName` 与 `bindingID` |
+| `--poc-action-test done 微信 <绑定id>` | ✅ `resolvedBy=id`，送达数 → 0 |
+| 随后打开 QQ | ✅ `无未完成绑定，静默返回` —— 同一条待办的另一个 App 也不再提醒（决策 3 的既定后果） |
+| `--poc-action-test done 微信`（不传 id） | ✅ `resolvedBy=name` —— v1 老通知的回退路径仍然可用 |
+
+### 「一个 App 只属于一条待办」不变量
+
+两个执行点都验了。**加载时**：两条绑定都声称微信 → 后一条的微信被摘掉并留痕
+`sanitize dropped [微信] from todo BBBB0000-…`。**写入时**（`--poc-claim-test`，走真实 store API，
+用独立临时文件，不碰真实数据）6 步全部符合设计，其中三步是重点：
+
+- 新建 B 声称微信 → 微信**从 A 手里被摘走**（后写覆盖）
+- 把 B 标记完成 → 它不再占着微信，A 可以拿走
+- 把 B 恢复待办 → 它把微信抢回来，而 A 被摘空后**仍然存在**（显示橙色「未选择 App（不会提醒）」），
+  **绝不静默删除用户的待办**
+
+### 封顶与截断（"触发器全选"之后这不再是理论问题）
+
+| 项 | 上限 | 实测 |
+| --- | --- | --- |
+| `ActivityLogStore` | 300 | ✅ 连打 400 次触发后恰好 300 |
+| `SeenAppStore` | 200 | ✅ 恰好 200 |
+| `POCTrace` | ~64 KB 文件 | ✅ 再打 1500 次后超过上限，截断生效：保留最新一半、首行不是残行（`App986`，文件 47274 字节，首字节 `[`） |
+
+三处的 `load` 路径也各截一次 —— 只在上限加入写入路径的话，改动之前留下的老文件永远瘦不回去。
+
+### 界面（**只有截图，没有真实点击**）
+
+本机没有触摸注入（`simctl` 不提供，辅助功能权限被拒 `-1719`），所以两个 sheet
+是加**临时启动参数**弹出来截的图，参数已删除。**"点击能打开 sheet"这件事本身没有验证过。**
+
+| 截图 | 确认了什么 |
+| --- | --- |
+| 待办页（未接线） | 橙色「接线还没通 —— 点这里看步骤」横幅 ＋ 两种成因的脚注；`appNames == []` 的绑定渲染成橙色「未选择 App（不会提醒）」；已接线的变体顶部换成普通「自动化接线指引」 |
+| 待办页（已接线） | 脚注变成「已检测到 N 个 App」，且 **N 不含本 App 自己**（9 条记录 → 显示 8），自过滤生效 |
+| 芯片换行 | 8 个长名字的绑定分成两行（5 + 3），左对齐 —— 自写的 `AppChipFlow: Layout` 正确换行 |
+| 接线指引 sheet | 四步 ＋ ⚠️「运行前询问」必须关掉 ＋ 排查清单标题。⚠️ **排查清单的正文在屏幕外，没有截图确认** |
+| 选择 App sheet | 被占用的 5 项置灰并标「已被「回客户消息」占用」，空闲的 3 项可选；本 App 自己不出现在列表里 |
+
+### 一个只有截图才能发现的真 bug：日期渲染成英文
+
+选择器里显示 **「共 7 次 · 最近 52 minutes ago」** —— 中英混排。
+
+原因不在 `Date.RelativeFormatStyle` 的用法，而在**本 App 没有任何本地化**：
+`Bundle.main` 未声明 `CFBundleLocalizations`，工程里也没有一处 `.strings`
+（界面文案全是中文字面量）。这种情况下 `Locale.current` 会落到**开发区域**，
+于是即使手机语言是中文也拿不到中文日期。
+
+**没有当成"模拟器的错觉"放过去**：把模拟器语言切成简体中文
+（`defaults write -g AppleLanguages -array zh-Hans` ＋ 重启）后重装重跑，**日期照样是英文**。
+
+改法是在 `POCFormat` 里把语系写死成 `zh_Hans_CN`。验证方式不是再截一张图
+（临时开关已经删了，不为看一眼格式再挂回去），而是让 `--poc-dump-state` 顺手把它打印出来：
+
+```
+LOCALE: current=en_CN relative="52分钟前" time="20:01:16"
+```
+
+`current` 是**不写死语系时会用的那个值**，与右边固定中文的输出并列 —— 一眼能判该不该跟随系统。
+左边那个 `en_CN` 正是 bug 的根：语言部分是 `en`，区域部分才是 `CN`。
+
+### 本次**没有**验证的（不许当成已验证）
+
+- **真实触摸交互**：点行打开选择器、点「完成」提交、左滑删除/标记完成、切标签页 —— 全部没验。
+- **真机**：v2 的所有验证都在模拟器上。真机侧需要重做的见 2b 与本节末尾的清单。
+- **接线指引 sheet 里排查清单的正文**：在屏幕外，只有标题可见。
+- **「触发器勾选全部 App」这个前提**：见 `docs/03` 第 4 节的开放项 ——
+  当初真机验的是**勾 2 个 App**，不是勾全部。**这是 v2 最大的开放项。**
+
+---
+
 ## 3. 未验证 / 无法在模拟器验证（诚实标注）
 
 | 项 | 状态 | 原因 |
@@ -389,6 +529,10 @@ CATEGORY TODO_REMINDER ACTIONS: [TODO_ACTION_DONE = "完成"; TODO_ACTION_LATER 
 | 收起的横幅上是否直接显示按钮 | ✅ **已确认：不显示** | 见 2g 节：必须下拉展开才会出现按钮，这是平台约束。 |
 | 真机安装（签名链路） | ✅ **已验证** | 见 2b 节第 12~16 项。 |
 | 设备端证书信任 | ✅ **已解决** | 由 VPN 阻断 OCSP 导致，关闭 VPN 后正常，详见 2c 节。 |
+| **v2 的模拟器验证** | ✅ **已验证** | 见 2h 节：数据迁移、不变量、封顶、`auth=notDetermined` 回归、界面截图。 |
+| **v2 改动后的真机手指点击** | ⏳ **需要重验** | 上面那条"手指真实点击"发生在 **v2 之前**，当时通知里只带 App 名。现在优先按 `bindingID` 解析，**解析路径换了一条，旧证据不能沿用**。 |
+| **触发器勾选全部 App** | ⏳ **未验证** | 当初真机验的是勾 **2 个** App；v2 的前提是勾全部。见 `docs/03` 第 4 节。 |
+| **v2 改动的真机端到端** | ⏳ **需要重验** | v2 的验证全在模拟器上。真机至少要过一遍：重建那条全选自动化、打开 3~5 个 App 看检测列表、重装后重授权再触发一次。 |
 
 > **结论边界**：Track B 的**前提**（系统 Shortcuts 能在目标 App 被打开时调起这个 Intent）
 > 已在 2d 节真机验证通过；产品的**最小闭环**（绑定待办 → 打开 App → 弹出待办 →
@@ -416,14 +560,14 @@ DEV=$(xcrun simctl list devices booted | grep -o "[0-9A-F-]\{36\}" | head -1)
 APP=/tmp/fapoc-dd/Build/Products/Debug-iphonesimulator/FamilyActivityPoC.app
 xcrun simctl install $DEV $APP
 
-# 预置一条绑定（正常流程是在 App 的「待办」页里手填，脚本化验证时直接写文件）
+# 预置一条绑定（正常流程是在 App 的「待办」页里点选，脚本化验证时直接写文件）
 SUPPORT="$(xcrun simctl get_app_container $DEV com.example.FamilyActivityPoC data)/Library/Application Support"
 cat > "$SUPPORT/todo-bindings.json" <<'JSON'
-[ { "id":"11111111-1111-1111-1111-111111111111", "appName":"微信",
+[ { "id":"11111111-1111-1111-1111-111111111111", "appNames":["微信"],
     "todoText":"给张总回消息", "isDone":false, "createdAt":"2026-09-23T10:00:00Z" } ]
 JSON
 
-# 触发（每条命令前先 terminate，因为自检开关跑在 App.init() 里）
+# 触发（每条命令前**必须**先 terminate，见下方两个坑）
 xcrun simctl terminate $DEV com.example.FamilyActivityPoC 2>/dev/null
 xcrun simctl launch $DEV com.example.FamilyActivityPoC --poc-self-test 微信     # 应弹提醒
 xcrun simctl terminate $DEV com.example.FamilyActivityPoC 2>/dev/null
@@ -434,6 +578,18 @@ xcrun simctl launch $DEV com.example.FamilyActivityPoC --poc-dump-state        #
 # 查看结果
 cat "$SUPPORT/poc-state.txt"
 ```
+
+**三个消耗过真实时间的坑，写下来省下一次：**
+
+1. **`simctl launch` 对已经在跑的 App 不会带新参数重新拉起** —— 它只是把那个进程切到前台，
+   **参数被静默忽略**，然后你看到"什么都没发生"，很容易误判成代码有问题。
+   上面每条命令前的 `terminate` 不是保险，是必需的。
+2. **装之前先看产物的时间戳**，别假设 `xcodebuild` 一定刷新了
+   `Build/Products/*/FamilyActivityPoC.app`。曾经出现过产物是**隔天**的旧包、
+   `simctl install` 老老实实把它装进模拟器，于是截图里跑的是**上一代的界面**。
+   装之前 `stat -f '%Sm size=%z' <产物>/FamilyActivityPoC`，装之后再 `stat` 一次设备上的那份，两边一致才往下走。
+3. 顺带：**`simctl install` 会把数据容器换一个 UUID**。所有路径都要用
+   `get_app_container` **现取**，不能缓存。
 
 真机同理，把 `simctl` 换成 `devicectl`（`device install app` / `device process launch` /
 `device copy from`），UDID 用 `xcrun devicectl list devices` 查。
@@ -479,10 +635,24 @@ cat "$SUPPORT/poc-state.txt"
 > 「完成」按钮系统才会顺手消掉）。修法是在 `TodoStore` 里统一撤销，实测送达数 1 → 0。
 > 详见 2e 末尾「补充验收」。
 
+### 5.1b v2 的产品决策（2026-09-24）
+
+| # | 议题 | 决策 | 影响 |
+| --- | --- | --- | --- |
+| 1 | 触发器勾哪些 App | **全选**，约束放在本 App 里 | intent 每次切 App 都跑，未命中必须绝对静默 |
+| 2 | App 名怎么来 | **只能从检测列表选**，彻底去掉手输 | 消灭"两处拼写必须一致"这个静默失败类别 |
+| 3 | 一条待办绑几个 App | **可以绑多个**（如「回消息」绑微信＋企业微信） | 数据模型 1:N；在其中一个里点「完成」，别的也不提醒（用户已明确接受） |
+| 4 | 一个 App 能属于几条待办 | **只能一条** | 否则两条同时命中会重复提醒。后写覆盖，被摘空的待办**保留**并显橙色提示，绝不静默删除 |
+
 ### 5.2 工程上仍然存在的限制
 
 - **免费账号描述文件 7 天过期**：届时需重新 build 安装（见 `00-feasibility-analysis.md` B2b）；
   **重装后自动化绑定大概率要重建**，这是当前形态下最影响日常使用的一条。
+  重装还会把通知权限打回 `notDetermined`，此时打开目标 App 完全没反应（v2 已保证它至少不再挂死，
+  见 2h），需要回 App 里重新授权。
+- **App 名仍是本地化显示名**，不是 bundle id：系统换语言或 App 改名后名字会变，
+  需要重新选一次（界面会提示「系统还没上报过」）。真正的解法是 iOS 27 的 bundle id。
+- **「触发器勾选全部 App」未经真机验证**：当初验的是勾 2 个 App（见 `docs/03` 第 4 节开放项）。
 - **触发延迟未量化**：无外部插桩点，只能靠 `poc-trace.log` 的时间戳粗略观察。
 - **取证工具仍在包里**：`POCTrace` / `POCSelfTest` 是为排查而加的，不参与产品逻辑，
   进入产品化阶段应移除或 `#if DEBUG` 包起来。

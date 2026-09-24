@@ -15,11 +15,18 @@ enum POCTrace {
 
     private static let filename = "poc-trace.log"
 
+    /// 文件上限（字符数，≈字节数：内容绝大部分是 ASCII）。
+    ///
+    /// **为什么需要**：`write` 每写一行都是"读全文 → 拼接 → 原子写回"，
+    /// 也就是一次 O(文件大小) 的**主线程** I/O；而一次 App 切换就要写好几行。
+    /// 不封顶的话，随着日常使用每次触发都会越来越慢。
+    /// 超过上限时丢掉旧的一半 —— 排查现场永远只看最近的那一段。
+    private static let maxCharacters = 64 * 1024
+
     /// 追加一条带时间戳的记录。
     ///
     /// 每次调用都重新读-拼-原子写，写完立刻落盘：处理通知回调时进程随时可能被系统杀掉，
     /// 把内容缓冲在内存里就等于丢证据。
-    /// 文件很小（每条一行），这个朴素写法不值得为性能做优化。
     static func log(_ message: String) {
         let stamp = ISO8601DateFormatter().string(from: Date())
         // PID 必须带上：同一个 App 可能被系统反复拉起/回收，
@@ -39,7 +46,16 @@ enum POCTrace {
         ) else { return }
 
         let url = dir.appendingPathComponent(filename)
-        let existing = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+        var existing = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+
+        if existing.count > maxCharacters {
+            existing = String(existing.suffix(maxCharacters / 2))
+            // 从中间截断会留下半行；丢掉开头那个不完整的行，免得日志看起来像坏了。
+            if let newline = existing.firstIndex(of: "\n") {
+                existing = String(existing[existing.index(after: newline)...])
+            }
+        }
+
         try? (existing + line + "\n").write(to: url, atomically: true, encoding: .utf8)
     }
 }
