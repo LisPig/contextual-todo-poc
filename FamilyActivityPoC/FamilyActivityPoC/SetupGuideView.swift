@@ -63,8 +63,20 @@ struct SetupGuideView: View {
                         .foregroundStyle(.secondary)
                 }
             }
+            step(5, "回到桌面，打开一个 App 试试") {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("退回桌面，打开任意一个 App（比如微信），然后回到本 App。"
+                         + "「日志」页的「检测到的 App」里出现它，才算接通。")
+                    Text("这一步不能省：这条自动化是被动的，只在「某个 App 被打开」的那一刻触发。"
+                         + "刚建完时系统还不知道任何 App 的名字，列表必然是空的。")
+                    // 这一步不写成"注意：…"而是带一个 ⚠️：`step` 的 detail 整体是 secondary 色，
+                    // 加 `foregroundStyle` 不生效，但 ⚠️ 本身就能把这个坑拎出来。
+                    Text("⚠️ 在「快捷指令」里点运行按钮不算 —— 那一刻没有「当前 App」，"
+                         + "「获取当前 App」拿不到东西，列表不会变。")
+                }
+            }
         } header: {
-            Text("四步")
+            Text("五步")
         } footer: {
             Text("第 ① 步要求 iOS 18.2 或更高。系统版本太低的话，动作列表里搜不到「获取当前 App」。")
         }

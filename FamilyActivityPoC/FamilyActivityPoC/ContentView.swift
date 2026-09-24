@@ -80,6 +80,12 @@ private struct TodoTab: View {
     @State private var sheet: Sheet?
     @State private var newTodoText = ""
     @State private var draftAppNames: Set<String> = []
+    /// 待办输入框的焦点。
+    ///
+    /// **为什么必须显式管它**：这是个 `axis: .vertical` 的多行输入框，
+    /// 回车键的作用是**换行**而不是提交，List 里点空白处也不会自动收起键盘 ——
+    /// 也就是说，只有这个状态能提供"收起键盘"这个动作，没有它用户就没有退路。
+    @FocusState private var todoFieldFocused: Bool
 
     var body: some View {
         NavigationStack {
@@ -90,11 +96,26 @@ private struct TodoTab: View {
                 bindingSection
             }
             .navigationTitle("待办提醒")
+            // 往下滑也能收起键盘。键盘上的「完成」是主要出口，这一条是顺手的第二条。
+            .scrollDismissesKeyboard(.interactively)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button { sheet = .guide } label: {
                         Label("接线指引", systemImage: "questionmark.circle")
                     }
+                }
+            }
+            .toolbar {
+                // 键盘正上方那个「完成」。
+                //
+                // 挂在 `List` 上而不是输入框上：`.keyboard` 属于另一条工具栏，
+                // 位置由键盘决定，挂在哪一层都能生效；挂在 List 上不会被行内布局影响。
+                //
+                // 不用 `.submitLabel(.done)` 之类的办法：多行输入框上回车是换行，
+                // `onSubmit` 根本不会触发，只能显式改焦点。
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("完成") { todoFieldFocused = false }
                 }
             }
             .sheet(item: $sheet) { which in
@@ -201,8 +222,14 @@ private struct TodoTab: View {
         Section {
             TextField("待办内容，例如：给张总回消息", text: $newTodoText, axis: .vertical)
                 .lineLimit(1...3)
+                .focused($todoFieldFocused)
 
-            Button { sheet = .picker(nil) } label: {
+            Button {
+                // 收起键盘再弹 sheet：否则键盘会留在 sheet 后面，
+                // 关掉 sheet 之后还杵在那儿。
+                todoFieldFocused = false
+                sheet = .picker(nil)
+            } label: {
                 HStack {
                     Text("选择 App")
                         .foregroundStyle(.primary)
@@ -220,6 +247,7 @@ private struct TodoTab: View {
                 store.add(appNames: Array(draftAppNames), todoText: newTodoText)
                 newTodoText = ""
                 draftAppNames = []
+                todoFieldFocused = false   // 加完了就把键盘收掉，否则屏幕还占着一半
             }
             .disabled(!canAdd)
         } header: {
