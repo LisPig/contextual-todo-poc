@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 
 /// 极简事件追踪，用于回答"这一步到底有没有发生"。
 ///
@@ -11,9 +12,20 @@ import Foundation
 ///
 /// **与 `ActivityLog` 的区别**：`ActivityLog` 是产品语义的触发记录（进 UI、给人看）；
 /// 这里是无结构的排查流水，只为取证，不参与任何产品逻辑，随时可以删。
-enum POCTrace {
+///
+/// **线程安全：`Mutex`，不靠"反正都在主线程"。**
+/// 打开本工程之前这里事实上是串行的，但那是巧合 —— `LogAppOpenedIntent.perform()` 是
+/// **nonisolated** 的（`AppIntent` 协议如此），所以它调 `log` 时根本不在主线程；
+/// 而通知回调那几条路径在主线程。两边同时 `write` 就是一次
+/// 「读全文 → 拼接 → 写回」的并发丢更新 —— 排查日志丢行，恰好会让排查结论错向。
+/// 所以整段串行化，并且**不再把这次 I/O 压在主线程上**（`maxCharacters` 那段的
+/// 注释本来就是在抱怨这个成本）。
+nonisolated enum POCTrace {
 
     private static let filename = "poc-trace.log"
+
+    /// 串行化 `write` 的读-改-写。`Mutex` 只保护文件这一处状态，别的一律不碰。
+    private static let fileLock = Mutex(())
 
     /// 文件上限（字符数，≈字节数：内容绝大部分是 ASCII）。
     ///
@@ -23,7 +35,7 @@ enum POCTrace {
     /// 超过上限时丢掉旧的一半 —— 排查现场永远只看最近的那一段。
     private static let maxCharacters = 64 * 1024
 
-    /// 追加一条带时间戳的记录。
+    /// 追加一条带时间戳的记录。可从**任何线程**调用。
     ///
     /// 每次调用都重新读-拼-原子写，写完立刻落盘：处理通知回调时进程随时可能被系统杀掉，
     /// 把内容缓冲在内存里就等于丢证据。
@@ -33,7 +45,8 @@ enum POCTrace {
         // 只有看 PID 才能判断"点按钮那次"和"打开 App 那次"是不是同一个进程，
         // 进而区分"内存状态没更新"和"根本没走到这段代码"。
         let pid = ProcessInfo.processInfo.processIdentifier
-        write("[\(stamp)] pid=\(pid) \(message)")
+        let line = "[\(stamp)] pid=\(pid) \(message)"
+        fileLock.withLock { _ in write(line) }
     }
 
     private static func write(_ line: String) {

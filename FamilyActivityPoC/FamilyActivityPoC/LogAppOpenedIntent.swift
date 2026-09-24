@@ -16,15 +16,22 @@ import Foundation
 /// **未命中路径必须绝对静默**：不发通知、不弹任何东西。守不住就从提醒变成骚扰。
 struct LogAppOpenedIntent: AppIntent {
 
-    static var title: LocalizedStringResource = "检查待办并提醒"
+    // 三个都必须是 `let` 而不是 `var`。
+    //
+    // `AppIntent` 协议把这三条声明成 nonisolated 的 `{ get }`，所以本工程开了
+    // MainActor 默认隔离之后它们**仍然是 nonisolated** —— 而 `static var`
+    // 就是"非隔离的全局可变状态"，Swift 6 直接判错。改成 `let` 即可：
+    // 值一个字节都没变（`title` 仍是「检查待办并提醒」），Shortcuts 那边读到的
+    // 元数据也就完全一样。**不要**改成计算属性以外的形式去"绕过"它。
+    static let title: LocalizedStringResource = "检查待办并提醒"
 
-    static var description: IntentDescription = IntentDescription(
+    static let description: IntentDescription = IntentDescription(
         "查出与该 App 绑定的待办事项，并弹出带「完成 / 稍后再说」的提醒。",
         categoryName: "待办提醒"
     )
 
     /// 不要抢占前台：提醒应该浮在目标 App 之上，而不是把用户切走。
-    static var openAppWhenRun: Bool = false
+    static let openAppWhenRun: Bool = false
 
     /// 为什么是 `String?` 而不是 `String`。
     ///

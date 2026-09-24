@@ -133,11 +133,14 @@ open FamilyActivityPoC.xcodeproj
 FamilyActivityPoC/           Xcode 工程（objectVersion 77 的文件系统同步组，新增/改名 .swift 自动纳入编译）
 └── FamilyActivityPoC/
     ├── FamilyActivityPoCApp.swift   入口：注册通知类别、设 delegate、无头自检钩子
-    ├── ContentView.swift            两个 Tab：「待办」/「日志」；文件级 POCFormat 供两处共用
+    ├── ContentView.swift            根视图：两个 Tab 的 TabView + 通知权限状态
+    ├── TodoTab.swift                 「待办」页：接线状态 / 通知权限 / 待办中 / 已完成四段
+    ├── LogTab.swift                  「日志」页：检测到的 App + 触发记录
+    ├── POCFormat.swift              两个 Tab 共用的时间格式（写死中文，理由见文件内注释）
     ├── SetupGuideView.swift         接线指引 sheet：五步 + 「运行前询问」警告 + 排查清单
     ├── NewTodoSheet.swift           新增待办 sheet（右上角 ＋）：内容 + 内推「选择 App」
-    ├── AppPickerSheet.swift         选择 App：可复用的 AppPickerList（多选、已占用置灰）
-    │                                   + 一个 sheet 外壳（改绑已有待办走它）
+    ├── AppPickerList.swift          选择 App 的**列表本体**（多选、已占用置灰、空状态）
+    ├── AppPickerSheet.swift         上面那个列表的 sheet 外壳（改绑已有待办走它）
     ├── AppChipsView.swift           绑定的 App 芯片 + 自写的换行 Layout
     ├── TodoBinding.swift            绑定模型（appNames 集合 + v1 迁移 + 宽容解码）
     ├── TodoStore.swift              绑定的持久化与「一个 App 只属于一条待办」不变量
@@ -147,7 +150,7 @@ FamilyActivityPoC/           Xcode 工程（objectVersion 77 的文件系统同�
     ├── LogAppOpenedIntent.swift     ★ 被 Shortcuts 调用的那个 App Intent
     ├── ActivityLog.swift            事件日志模型
     ├── ActivityLogStore.swift       事件日志持久化
-    ├── POCTrace.swift               排查用追踪日志（非产品逻辑）
+    ├── POCTrace.swift               排查用追踪日志（非产品逻辑；Mutex 串行化）
     └── POCSelfTest.swift            无头自检开关（非产品逻辑）
 docs/
 ├── 00-feasibility-analysis.md       动工前的 A–E 分析：API 可行性、免费账号限制、架构、Target、步骤
@@ -228,7 +231,11 @@ xcrun devicectl device process launch --terminate-existing --device <UDID> \
 
 ## 开发环境
 
-macOS · Xcode 26.4 · Swift / SwiftUI · 部署目标 iOS 18.0 ·
+macOS · Xcode 26.4 · SwiftUI · 部署目标 iOS 18.0 ·
+**Swift 6 语言模式**（`SWIFT_VERSION = 6.0` + Approachable Concurrency + MainActor 默认隔离）·
 免费 Apple Personal Team · 真机 iPhone 15 Pro / iOS 26.7
 
 无需付费开发者账号，无需任何 entitlement。
+
+> 语言模式是 v4 才切的。切过去暴露了 7 个隔离错误，其中 `POCTrace` 那个是**真缺陷** ——
+> 详情与证据见 `docs/01-poc-verification.md` 2j。

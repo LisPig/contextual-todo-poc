@@ -6,6 +6,7 @@
 
 > **修订记录**
 >
+> - **r8（2026-09-24，迁移到 Swift 6 语言模式 + 按 SwiftUI 规范重构）**：构建配置开 `SWIFT_VERSION = 6.0` + `SWIFT_APPROACHABLE_CONCURRENCY = YES` + `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`，修掉随之暴露的 7 个隔离错误。**其中一个是真缺陷而不是编译噪音**：`POCTrace` 的"读全文→拼接→写回"没有任何同步，而 `LogAppOpenedIntent.perform()` 是 nonisolated（协议如此，不是本次引入的）—— 它和通知回调那条主线程路径**一直在并发写同一个文件**，只是以前没报错。改成 `Mutex` 串行化，并把这次 I/O 从主线程挪走。另按 swiftui-pro / write-swift 两个 skill 做了结构与 API 层面的整理（拆文件、`LabeledContent`、可点区域、VoiceOver 状态）。证据见 `01-poc-verification.md` 2j。
 > - **r7（2026-09-24，待办页布局改造）**：把「新增待办」从待办页搬进右上角 ＋ 打开的独立 sheet，待办列表分「待办中／已完成」两段（已完成默认折叠），解决"待办一多就要一直上滑"。分组做成**只读展示投影**（`pendingBindings` / `completedBindings`），`bindings` 的存储顺序一个字节没动 —— 它的顺序同时是三处取证输出的顺序。顺带修掉两个既有缺陷（界面与 store 的 trim 判据不一致导致的静默丢弃、选择器里"四步"的旧文案）。证据与真机待确认项见 `01-poc-verification.md` 2i。
 > - **r6（2026-09-24，第一阶段收尾）**：① 通知生命周期修完两处 —— **去重**（投递标识符由随机 UUID 改为待办自身的 id，通知中心只保留最新一条，横幅行为不变）与**残留清理**（在 App 界面标记完成/删除绑定时撤销已送达的通知，此前只有点通知上的「完成」按钮才会消）。两处均在模拟器实测，见 `01-poc-verification.md` 2e 与 5.1。② 文档重组：**原始需求由 `README.md` 归档至 `docs/02-original-brief.md`**，`README.md` 改为面向开发者的项目说明，本文与 `01` 中对"README 要求"的指代已同步更新。③ `POCNotifier.swift` 更名为 `TodoReminder.swift`（内容早已不只是 PoC 通知）。
 > - **r5（2026-09-23，真机端到端验收完成）**：最小闭环在**真机上用真实手指点击**验证通过 —— 点「完成」后 `isDone` 翻转、再次打开目标 App 静默；点「稍后再说」状态不变、再次打开仍提醒。此前"按钮点击能否被系统投递"是唯一未覆盖环节，现已由真机追踪日志证实。过程中定位两个**非代码**的真机坑：① **专注模式**会把通知静默投递（表现为"通知发了但看不到"，且 Shortcuts 对话框不受影响，极易误判为代码 bug）；② **收起的横幅不显示操作按钮**，必须下拉展开，这是平台约束，产品化时必须纳入体验设计。详见 `01-poc-verification.md` 2e/2f/2g。

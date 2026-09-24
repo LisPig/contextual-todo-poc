@@ -64,27 +64,36 @@ struct NewTodoSheet: View {
                         // 影响。存在的唯一理由：下面「完成」那条 `placement: .keyboard` 工具栏
                         // 在 sheet 里能否渲染是本次唯一没把握的点，而它一旦失效，失败模式正是
                         // 用户已经撞过的那个 —— 多行输入框回车是换行、点空白不收键盘，
-                        // 没有任何出口。成本 5 行，不赌。
+                        // 没有任何出口。成本几行，不赌。
                         if textFocused {
-                            Button { textFocused = false } label: {
-                                Image(systemName: "keyboard.chevron.compact.down")
+                            // 文字写进 `Button` 的标题、再用 `.labelStyle(.iconOnly)` 只显示图标：
+                            // 视觉不变，但 VoiceOver 拿到的是「收起键盘」而不是一个符号名。
+                            //
+                            // `minWidth/minHeight: 44` 是硬要求（Apple 的最小可点区域）。
+                            // 之前只写了 `Image` + `.buttonStyle(.plain)`，命中区就是那个
+                            // 十几点宽的图标 —— **全屏最难点的按钮，恰好是唯一的兜底出口**。
+                            Button("收起键盘", systemImage: "keyboard.chevron.compact.down") {
+                                textFocused = false
                             }
+                            .labelStyle(.iconOnly)
                             .buttonStyle(.plain)
                             .foregroundStyle(.secondary)
-                            .accessibilityLabel("收起键盘")
+                            .frame(minWidth: 44, minHeight: 44)
                         }
                     }
 
                     Button { openPicker() } label: {
-                        HStack {
-                            Text("选择 App")
-                                .foregroundStyle(.primary)
-                            Spacer()
-                            Text(appNames.isEmpty ? "未选择" : "已选 \(appNames.count) 个")
-                                .foregroundStyle(appNames.isEmpty ? Color.secondary : Color.accentColor)
-                            Image(systemName: "chevron.right")
-                                .font(.caption)
-                                .foregroundStyle(.tertiary)
+                        // 同 `permissionSection`：这是标准的"左标题右取值"，用 `LabeledContent`
+                        // 而不是自己 HStack + Spacer 拼。
+                        LabeledContent("选择 App") {
+                            HStack(spacing: 4) {
+                                Text(appNames.isEmpty ? "未选择" : "已选 \(appNames.count) 个")
+                                    .foregroundStyle(appNames.isEmpty ? Color.secondary : Color.accentColor)
+                                Image(systemName: "chevron.right")
+                                    .font(.caption)
+                                    .foregroundStyle(.tertiary)
+                                    .accessibilityHidden(true)
+                            }
                         }
                     }
 
@@ -118,7 +127,7 @@ struct NewTodoSheet: View {
                     Button("取消") { dismiss() }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("添加") { add() }
+                    Button("添加", action: add)
                         .disabled(!canAdd)
                 }
             }

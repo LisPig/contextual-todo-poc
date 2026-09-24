@@ -623,6 +623,92 @@ apply finished action=TODO_ACTION_DONE after=微信:done,QQ:done,支付宝:pendi
 
 ---
 
+## 2j. v4 证据：Swift 6 语言模式 + 按 SwiftUI 规范重构（2026-09-24）
+
+起因是用户装了两个 skill（`swiftui-pro`、`write-swift`），要求按它们审一遍设计。审出来的
+结构问题按优先级分批改，**本次只做不动视图结构的那几档**（抽 `View` 结构体那条留待下次）。
+
+### 改了什么
+
+| 类别 | 内容 |
+| --- | --- |
+| 构建配置 | `SWIFT_VERSION` 5.0 → **6.0**；新增 `SWIFT_APPROACHABLE_CONCURRENCY = YES`、`SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`（`project.pbxproj` 的 Debug + Release 两处） |
+| 并发缺陷 | `POCTrace` 改为 `Mutex` 串行化（见下） |
+| 隔离修正 | `TodoBinding` 标 `nonisolated`；`LogAppOpenedIntent` 的三个 `static var` → `static let` |
+| 可点区域 | 新增待办 sheet 里键盘兜底按钮的命中区从「图标那么大」改为 44×44 |
+| 可访问性 | 选择器的勾选状态加 `.isSelected` trait；装饰性 chevron 加 `.accessibilityHidden`；折叠条报展开/收起状态 |
+| 结构 | `ContentView.swift` 一拆四（`ContentView` / `TodoTab` / `LogTab` / `POCFormat`）、`AppPickerSheet.swift` 一拆二（`AppPickerList` / 壳）；零碎：`LabeledContent` ×2、`action:` 形参、`.caption2` → `.caption` |
+
+### 唯一一个真缺陷（不是编译噪音）：`POCTrace` 一直在并发写同一个文件
+
+切到 Swift 6 语言模式后报的 7 个错误里，6 个是纯隔离标注问题，**这一个是真 bug**：
+
+`POCTrace.write` 是「读全文 → 拼接 → 原子写回」——一次典型的读-改-写。它此前没有任何同步，
+之所以没出事只是因为**大家碰巧都在主线程**。但 `LogAppOpenedIntent.perform()` 是
+**nonisolated**（`AppIntent` 协议本身如此，不是本次引入的），它调 `log` 时不在主线程；
+而通知回调那几条路径在主线程。两边同时写就是一次并发丢更新 —— 排查日志丢行，
+恰好会让排查结论错向。改成 `Mutex` 串行化（`Synchronization`，iOS 18+），
+顺带把这次 I/O 从主线程挪走（原注释本来就在抱怨这个成本）。
+
+**证据（`--poc-bulk-test 300`，连续 300 次 `perform()`）**：
+
+```
+耗时 14s                      ← 无死锁
+trace 行数: 301               ← 1 行启动记录 + 300 次调用，零丢行
+非法行（不以 [ISO时间] pid= 开头）: 0    ← 无撕裂写
+```
+
+丢行和撕裂正是这个 Mutex 要防的两件事，两项都是 0。
+
+### 回归（同一套无头证据，改完全部重跑）
+
+```
+LOCALE: current=en_CN relative="52分钟前" time="22:03:00"
+CATEGORY TODO_REMINDER ACTIONS: [TODO_ACTION_DONE = "完成"; TODO_ACTION_LATER = "稍后再说"]
+BINDINGS: 5 (pending=2 done=3)
+```
+
+- `--poc-self-test 微信`：微信此时是已完成状态，正确输出
+  `perform app="微信" -> 无未完成绑定，静默返回` —— **未命中路径仍然绝对静默**，这是本项目的底线。
+- `--poc-action-test done 微信`：`before=微信:pending,…` → `after=微信:done,…`，
+  **原地翻转、没有跳到数组末尾** —— 2i 那条存储顺序不变量在 Swift 6 下依然成立。
+- `--poc-action-test later 微信`：对**已完成**条目是空操作（`before` == `after`），符合「稍后再说」
+  的语义（它只让待办保持未完成，不会把已完成改回待办中）。
+- `--poc-migration-test` / `--poc-claim-test`：与 v3 一致。
+
+### 构建
+
+Swift 6 语言模式 + 两个新设置下，**零错误、零警告**（`CONFIGURATION = Debug`）。
+
+### 一个刻意**没有**做的清理
+
+`@MainActor` 在 `View` 和三个 `@Observable` store 上现在是冗余的（MainActor 已是默认隔离）。
+实测删掉 `ContentView` 那个标注后照样编译通过、零警告。**但我把它留下了**：
+它是这个类型所有状态"只在主线程动"的显式声明，而 build setting 是可以被下一个人改掉的。
+`data.md` 的规则是"除非项目开了 MainActor 默认隔离"，即「不必写」，不是「不许写」。
+
+### 界面截图
+
+| 截图 | 证明了 |
+| --- | --- |
+| 待办页 | `LabeledContent("通知权限")` 在 List 里正常渲染（左标题右取值，与改造前的 `HStack + Spacer` 视觉一致）；「已完成（3）」折叠条的 chevron 已与待办行同号 |
+| 新增待办 sheet（聚焦态） | 键盘兜底按钮在行内、整行因此变高（44pt 的诚实代价）；`LabeledContent("选择 App")` 套在 `Button` 标签里正常渲染；键盘附件的「完成」在 sheet 里仍渲染 |
+
+截图用的两个临时启动参数（`--poc-open-new-todo`、`--poc-new-todo-focus`）**已删除并 grep 到零**
+（现存的 6 个 `--poc-*` 参数与改造前完全相同）。
+
+### 本次**没有**验证的
+
+- **那个 44pt 的命中区只是"写对了"，没有真的用手指点过** —— 模拟器没有触摸注入，
+  截图只证明视觉与行高变化、不证明按得中。这是本次最值得真机确认的一条。
+- **VoiceOver 的三处改动全部没有实际听过**（`.isSelected` trait、两个 `.accessibilityHidden`、
+  折叠条的状态标签）—— 模拟器能开 VoiceOver，但本次没做。
+- 拆文件、`LabeledContent`、`caption2` → `caption` 都属于"编译过 + 截图像原来"，**交互未验**。
+- 2i 里那份「没有验证的」清单**依然全部有效**（v3 的行为本次一个字没改）。
+- **v4 整体在真机上没跑过。**
+
+---
+
 ## 3. 未验证 / 无法在模拟器验证（诚实标注）
 
 | 项 | 状态 | 原因 |

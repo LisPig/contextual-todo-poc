@@ -16,7 +16,13 @@ import Foundation
 ///
 /// 空数组是**合法状态**（比如某条待办引用的 App 被另一条抢走），
 /// 表示"这条待办当前不会提醒"。界面必须如实提示，不能静默删除。
-struct TodoBinding: Codable, Identifiable, Hashable {
+///
+/// `nonisolated`：本工程开了 `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`，
+/// 不写的话这个类型整体会被划到主线程。**模型类型不该有线程归属** ——
+/// 归一化、去重、编解码都是纯计算，编解码尤其不该被绑在主线程上。
+/// 不标的实际后果实测过：`SeenAppStore.ownAppNames` 那个 `static let` 初始化器
+/// 是非隔离的，把 `TodoBinding.normalize` 当函数值传给 `.map` 直接编译失败。
+nonisolated struct TodoBinding: Codable, Identifiable, Hashable {
     let id: UUID
     /// 绑定的 App 名，来自本 App 的「检测到的 App」列表（即系统上报的显示名）
     var appNames: [String]
