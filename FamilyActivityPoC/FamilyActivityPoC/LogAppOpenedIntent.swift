@@ -66,7 +66,7 @@ struct LogAppOpenedIntent: AppIntent {
 
         await TodoReminder.requestAuthorization()
         // 用待办自身的 id 作投递标识符：同一条待办反复提醒时只保留最新一条通知，
-        // 不会在通知中心堆重复（见 POCNotifier.post 的参数说明）。
+        // 不会在通知中心堆重复（见 TodoReminder.post 的参数说明）。
         await TodoReminder.post(
             identifier: binding.id.uuidString,
             appName: binding.appName,

@@ -62,9 +62,12 @@ final class TodoStore {
     func markDone(id: UUID) {
         guard let idx = bindings.firstIndex(where: { $0.id == id }) else { return }
         bindings[idx].isDone = true
+        cancelReminder(for: id)
         save()
     }
 
+    /// 重新变为"待办中"。**不撤销**已有提醒：重新待办之后本就该被提醒，
+    /// 留着那条通知反而与状态一致。
     func markPending(id: UUID) {
         guard let idx = bindings.firstIndex(where: { $0.id == id }) else { return }
         bindings[idx].isDone = false
@@ -73,6 +76,7 @@ final class TodoStore {
 
     func remove(id: UUID) {
         bindings.removeAll { $0.id == id }
+        cancelReminder(for: id)
         save()
     }
 
@@ -81,7 +85,17 @@ final class TodoStore {
         let key = TodoBinding.normalize(appName)
         guard let idx = bindings.firstIndex(where: { $0.normalizedAppName == key }) else { return }
         bindings[idx].isDone = true
+        cancelReminder(for: bindings[idx].id)   // 此路径系统已消掉通知，这里只是保持不变量
         save()
+    }
+
+    /// 待办结束时顺手撤掉通知中心里它残留的那条提醒。
+    ///
+    /// 放在 store 里、而不是交给各个调用点，是为了让"状态变成已结束 → 不再有活的提醒"
+    /// 成为一个**漏不掉的约束**：以后新增调用点（比如批量完成、后台同步）不必记得这件事。
+    /// 代价是 store 依赖了通知层 —— 对当前的规模来说，这个取舍比到处补调用划算。
+    private func cancelReminder(for id: UUID) {
+        TodoReminder.cancel(identifier: id.uuidString)
     }
 
     // MARK: - 持久化

@@ -1,6 +1,6 @@
 # Track B 最小 PoC · 实现与实测记录
 
-对应 `README.md` 第一阶段："选择一个 App → 授权 → 开始监控 → 打开目标 App → 记录是否检测到 activity"。
+对应原始需求第一阶段（`docs/02-original-brief.md`）："选择一个 App → 授权 → 开始监控 → 打开目标 App → 记录是否检测到 activity"。
 范围决策：**免费 Apple 账号，只做 Track B**（Shortcuts / App Intents），Track A 本期不实现。
 
 实测环境：macOS 26.6.2 (25G83) · Xcode 26.4 (17E192) · iOS SDK 26.4 · 模拟器 iPhone 17 / iOS 26.4 (23E244)
@@ -19,7 +19,7 @@ FamilyActivityPoC/
     ├── TodoStore.swift              # 绑定的持久化 + 按 App 名查未完成待办
     ├── ActivityLog.swift            # 事件日志模型；source 区分 shortcutIntent / deviceActivity
     ├── ActivityLogStore.swift       # 沙盒 Application Support 持久化（非 App Group）
-    ├── POCNotifier.swift            # TodoReminder（本地通知出口）+ TodoNotificationHandler（按钮回调）
+    ├── TodoReminder.swift           # TodoReminder（本地通知出口）+ TodoNotificationHandler（按钮回调）
     ├── LogAppOpenedIntent.swift     # AppIntent + AppShortcutsProvider
     ├── POCSelfTest.swift            # 无头自检开关（见 2e）
     └── POCTrace.swift               # 取证用事件追踪，带 PID/时间戳（排查 2f 类问题）
@@ -42,7 +42,7 @@ FamilyActivityPoC/
 | --- | --- | --- | --- |
 | 1 | 工程可被 `xcodebuild` 解析 | ✅ | `xcodebuild -list` 正确列出 target `FamilyActivityPoC` 与同名 scheme |
 | 2 | 编译到 iOS 模拟器 | ✅ | `** BUILD SUCCEEDED **`，**0 error 0 warning** |
-| 3 | 自动纳入源文件 | ✅ | file-system-synchronized 组生效：5 个 `.swift` 全部参与编译，未改 pbxproj |
+| 3 | 自动纳入源文件 | ✅ | file-system-synchronized 组生效：10 个 `.swift` 全部参与编译，未改 pbxproj（新增文件时验证通过；后改名 `POCNotifier.swift` → `TodoReminder.swift` 同样无需改 pbxproj） |
 | 4 | 安装到模拟器 | ✅ | `simctl install` → INSTALL OK |
 | 5 | 启动运行 | ✅ | `simctl launch` → PID 正常返回 |
 | 6 | UI 渲染 | ✅ | 截图确认三步界面完整（授权 / 触发 / 结果） |
@@ -74,14 +74,19 @@ FamilyActivityPoC/
   0 => {
     "actionIdentifier" => "LogAppOpenedIntent"
     "phraseTemplates" => [
-      0 => { "key" => "用 ${applicationName} 记录 App 打开" }
-      1 => { "key" => "让 ${applicationName} 记录 App 打开" }
+      0 => { "key" => "用 ${applicationName} 检查待办" }
+      1 => { "key" => "让 ${applicationName} 检查待办" }
     ]
-    "shortTitle" => { "key" => "记录 App 打开" }
-    "systemImageName" => "eye.trianglebadge.exclamationmark"
+    "shortTitle" => { "key" => "检查待办并提醒" }
+    "systemImageName" => "checklist"
   }
 ]
 ```
+
+> 这三处文案是产品化改名后的现值（原名 `记录 App 打开`，动作只记日志；现在会发提醒）。
+> 从当前构建产物 `FamilyActivityPoC.app/Metadata.appintents/extract.actionsdata` 重新提取。
+> **注意 `actionIdentifier` 仍是 `LogAppOpenedIntent`** —— 它是 Shortcuts 自动化的绑定键，
+> 改类型名会让手机上已建的自动化失效，故保留（见第 5 节）。
 
 → 该 action 具备被系统「快捷指令」发现的条件（`AppShortcutsProvider` 编译产物的直接证据）。
 
@@ -167,7 +172,7 @@ xcrun devicectl device copy from --device <UDID> \
 }
 ```
 
-### 对 README 原始问题的回答
+### 对原始需求问题的回答
 
 > 用户在 iPhone 上打开指定的第三方 App → 我的测试 App 能否检测到这个 App 的 activity
 > → 随后能够触发一个测试事件/提醒
@@ -272,6 +277,37 @@ CATEGORY TODO_REMINDER ACTIONS: [TODO_ACTION_DONE = "完成"; TODO_ACTION_LATER 
 > 三条路径的分工值得注意：点**横幅本体**（默认动作）与点**「稍后再说」**的效果都是
 > "状态不变、下次仍提醒"，但走的是不同 `actionIdentifier`。两者都被显式处理，
 > 没有依赖"什么都不做"的默认行为。
+
+#### 补充验收：待办结束后，残留的通知会被撤掉（2026-09-24）
+
+上面三条路径里，只有**点通知上的「完成」按钮**会让系统顺手消掉那条通知。
+另外两条路径系统不管，会在通知中心留下一条"已经做完的待办"：
+
+- 在 App 界面里左滑标记完成
+- 直接删除绑定
+
+修法是在 `TodoStore` 里统一加 `cancelReminder`（而不是让每个调用点自己记得），
+调 `TodoReminder.cancel(identifier:)` → `removeDeliveredNotifications(withIdentifiers:)`。
+
+**这里有个容易写错的地方**：`removeDeliveredNotifications` 撤的是**已送达**的通知，
+`removePendingNotificationRequests` 撤的是**尚未送达**的。本项目用 `trigger: nil`
+立即送达，通知属于前者 —— **写成后者会静默失效，什么都不报**。
+所以这一条必须实测，不能只看编译通过：
+
+| 步骤 | 动作 | `DELIVERED NOTIFICATIONS` |
+| --- | --- | --- |
+| 1 | 触发一次提醒 | **1**（`title="打开 微信 时想起" category=TODO_REMINDER`） |
+| 2 | 走 `apply` → `markDone` → `cancel` | — |
+| 3 | 重新读回状态 | **0** ✅ |
+
+步骤 2 是无头调用，系统并没有"用户点了通知"这件事，所以**送达数归零只可能是
+我们那次 `cancel()` 干的** —— 这条证据能成立，靠的正是它不经过系统路径。
+
+> 复现时的一个坑：`simctl uninstall` 会**重置通知权限**（`auth=notDetermined`），
+> 而无头启动弹不出授权框，`requestAuthorization` 会一直等下去，
+> 后续 `post()` 根本不执行（追踪日志里连 `post` 行都没有）。
+> 本地验证时用**临时**加上 `.provisional` 选项绕过（无需弹窗、静默送达即可，
+> 撤销通知不依赖横幅），验完立即改回 `[.alert, .sound, .badge]`。
 
 ### 仍未覆盖
 
@@ -437,6 +473,11 @@ cat "$SUPPORT/poc-state.txt"
 > ```
 >
 > 两个数字合起来才说明问题：**只 +1 证明去重生效，post ok 有 6 次证明提醒照常发**。
+>
+> **残留通知也已修复（同日）**：去重解决的是"反复提醒堆很多条"，还剩一个反向问题 ——
+> 在 App 界面里标记完成/删除绑定时，那条已经没意义的通知会**留在通知中心**（只有点通知上的
+> 「完成」按钮系统才会顺手消掉）。修法是在 `TodoStore` 里统一撤销，实测送达数 1 → 0。
+> 详见 2e 末尾「补充验收」。
 
 ### 5.2 工程上仍然存在的限制
 
@@ -446,7 +487,7 @@ cat "$SUPPORT/poc-state.txt"
 - **取证工具仍在包里**：`POCTrace` / `POCSelfTest` 是为排查而加的，不参与产品逻辑，
   进入产品化阶段应移除或 `#if DEBUG` 包起来。
 
-### 5.3 交付物边界（回答 README 需求 3、6）
+### 5.3 交付物边界（回答原始需求第 3、6 条）
 
 | 问题 | 结论 |
 | --- | --- |

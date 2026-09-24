@@ -65,6 +65,18 @@ enum TodoReminder {
         await UNUserNotificationCenter.current().notificationSettings().authorizationStatus
     }
 
+    // MARK: - 撤销
+
+    /// 撤掉某条待办残留在通知中心的提醒。幂等，重复调用无副作用。
+    ///
+    /// **为什么需要它**：只有**点通知上的「完成」按钮**时，系统才会顺手把那条通知消掉。
+    /// 在 App 界面里左滑标记完成、或删除绑定，系统都不管 —— 通知中心会留下一条
+    /// "已经做完了的待办"。所以这两条路径必须显式调用本方法。
+    static func cancel(identifier: String) {
+        UNUserNotificationCenter.current()
+            .removeDeliveredNotifications(withIdentifiers: [identifier])
+    }
+
     // MARK: - 发送
 
     /// 发出一条待办提醒。

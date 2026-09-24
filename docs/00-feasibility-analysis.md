@@ -1,15 +1,16 @@
 # iOS「检测第三方 App activity」技术可行性分析（阶段 0，写代码前）
 
-对应 `README.md` 要求：先输出 A–E，不做完整产品实现。
+对应原始需求（`docs/02-original-brief.md`）要求：先输出 A–E，不做完整产品实现。
 
 核对日期：本机 macOS 26.6.2；资料以 Apple 官方文档为主，论坛/第三方仅作补充并已标注。
 
 > **修订记录**
 >
+> - **r6（2026-09-24，第一阶段收尾）**：① 通知生命周期修完两处 —— **去重**（投递标识符由随机 UUID 改为待办自身的 id，通知中心只保留最新一条，横幅行为不变）与**残留清理**（在 App 界面标记完成/删除绑定时撤销已送达的通知，此前只有点通知上的「完成」按钮才会消）。两处均在模拟器实测，见 `01-poc-verification.md` 2e 与 5.1。② 文档重组：**原始需求由 `README.md` 归档至 `docs/02-original-brief.md`**，`README.md` 改为面向开发者的项目说明，本文与 `01` 中对"README 要求"的指代已同步更新。③ `POCNotifier.swift` 更名为 `TodoReminder.swift`（内容早已不只是 PoC 通知）。
 > - **r5（2026-09-23，真机端到端验收完成）**：最小闭环在**真机上用真实手指点击**验证通过 —— 点「完成」后 `isDone` 翻转、再次打开目标 App 静默；点「稍后再说」状态不变、再次打开仍提醒。此前"按钮点击能否被系统投递"是唯一未覆盖环节，现已由真机追踪日志证实。过程中定位两个**非代码**的真机坑：① **专注模式**会把通知静默投递（表现为"通知发了但看不到"，且 Shortcuts 对话框不受影响，极易误判为代码 bug）；② **收起的横幅不显示操作按钮**，必须下拉展开，这是平台约束，产品化时必须纳入体验设计。详见 `01-poc-verification.md` 2e/2f/2g。
 > - **r4（2026-09-23，产品最小闭环）**：按产品的真实意图（**打开某个 App 时弹出横幅提醒该 App 绑定的待办事项**，而非"记录事件"）实现并验证了最小闭环。要点：① 提醒改用**本地通知**而非 Shortcuts 对话框 —— 对话框横幅**不支持自定义按钮**，而产品要求「完成 / 稍后再说」；② 新增 `TodoBinding` / `TodoStore` 数据模型与「App 名 ↔ 待办」绑定 UI；③ `appName` 参数改 Optional（必填时 Shortcuts 每次触发都弹窗，破坏零交互前提）。模拟器与真机均实测通过：绑定 → 打开 → 弹待办 → 完成则不再提醒 / 稍后则仍提醒。C 节架构图与双轨对比表已按此更新，详见 `01-poc-verification.md` 2e 节。
 > - **r3（2026-09-23，真机实测结论）**：Track B 由 ⚠️ 升级为 ✅ **已验证成立**。在 iPhone 15 Pro / iOS 26.7 上实测：打开微信 → Shortcuts 个人自动化自动触发 → 调用本 App 的 `LogAppOpenedIntent` → 事件落盘，**全程无人工交互**。A0/A3 节的判断（iOS 无 API 直接监听，Shortcuts 是唯一可行路径）获得实证。**仍成立的两点限制**：① 自动化需用户手动配置一次，App 无法程序化创建；② 免费账号描述文件 7 天过期，需定期重装（重装会打断自动化绑定，需重建）。详见 `01-poc-verification.md`。
-> - **r2（2026-09-23）**：① 勘误 Phase 0 环境判断——初稿"未安装 Xcode"为误判，实测 Xcode 26.4 与 iOS SDK 26.4 均已就绪，唯一阻塞是 `xcode-select` 指向错误；② 依 README 需求 6，把 Track B 由 ✅ 降为 ⚠️ **待实测**；③ 免费账号额度（7 天过期 / 3 设备 / 每设备 3 App / 10 App ID）由官方页面确证，去掉"待确认"标记；④ 按"免费账号只做 Track B"决策收敛范围，Track A 本期不实现；⑤ 因 Track B 无跨进程共享，**取消 App Group 依赖**，改用沙盒 `Application Support`；⑥ 全部 A 节技术论断经独立核验对照 Apple 一手文档，**7 条无一被推翻**（核验方式见文末）。
+> - **r2（2026-09-23）**：① 勘误 Phase 0 环境判断——初稿"未安装 Xcode"为误判，实测 Xcode 26.4 与 iOS SDK 26.4 均已就绪，唯一阻塞是 `xcode-select` 指向错误；② 依原始需求第 6 条，把 Track B 由 ✅ 降为 ⚠️ **待实测**；③ 免费账号额度（7 天过期 / 3 设备 / 每设备 3 App / 10 App ID）由官方页面确证，去掉"待确认"标记；④ 按"免费账号只做 Track B"决策收敛范围，Track A 本期不实现；⑤ 因 Track B 无跨进程共享，**取消 App Group 依赖**，改用沙盒 `Application Support`；⑥ 全部 A 节技术论断经独立核验对照 Apple 一手文档，**7 条无一被推翻**（核验方式见文末）。
 > - **r1**：初稿（A–E 分析）。
 
 ---
@@ -147,7 +148,7 @@ Shortcuts 官方说明（Apple Support，Intro to shortcuts with automations）�
   TodoStore.swift           // 绑定的持久化 + pendingBinding(forAppNamed:)：按 App 名查「未完成」的待办
   ActivityLog.swift         // Codable: {id, source: .deviceActivity | .shortcutIntent, event, timestamp}
   ActivityLogStore.swift    // 持久化：本期用 App 沙盒 Application Support（Track B-only 无跨进程需求，不用 App Group）
-  POCNotifier.swift         // TodoReminder（本地通知出口）+ TodoNotificationHandler（「完成/稍后再说」回调）
+  TodoReminder.swift        // TodoReminder（本地通知出口）+ TodoNotificationHandler（「完成/稍后再说」回调）
   POCSelfTest.swift         // 无头自检开关（本机无法 UI 自动化时的取证手段）
 ```
 
@@ -293,7 +294,7 @@ Track B 的已知代价（必须写进结论，不能当成「原生能力」）
 **② 不止于"记录日志"**，而是做到了产品的最小闭环（绑定待办 → 弹出待办 → 完成/稍后）。
 
 1. ~~建工程 `FamilyActivityPoC`，加 App Group~~ → 建了工程，**未加 App Group**。
-2. `ActivityLog` / `ActivityLogStore` / `TodoBinding` / `TodoStore` / `POCNotifier` / `POCSelfTest`。
+2. `ActivityLog` / `ActivityLogStore` / `TodoBinding` / `TodoStore` / `TodoReminder` / `POCSelfTest`。
 3. 主 App：两个标签页 —— 「待办」管理 App↔待办绑定，「日志」看触发记录。
 4. `LogAppOpenedIntent`（`AppIntent`，参数 `appName: String?`）+ `AppShortcutsProvider`。
 5. 真机运行 → 快捷指令中确认 action 可见 → 手动执行一次 → 看到日志。
