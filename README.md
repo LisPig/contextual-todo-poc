@@ -170,6 +170,7 @@ xcrun devicectl device process launch --terminate-existing --device <UDID> \
 |---|---|
 | [`docs/01-poc-verification.md`](docs/01-poc-verification.md) | **想知道"到底验证了什么"** —— 11 项实测清单、真机端到端追踪原文、两个真机大坑（VPN/OCSP、专注模式） |
 | [`docs/00-feasibility-analysis.md`](docs/00-feasibility-analysis.md) | **想知道"为什么选这条路"** —— A–E 分析、7 条技术论断的一手文档核验、免费/付费/App Store 三档能力对照 |
+| [`docs/03-shortcuts-setup-research.md`](docs/03-shortcuts-setup-research.md) | **想改接线体验** —— v2 调研：Shortcuts「App」触发器的真实能力（拆二进制查实，Apple 文档在"能否多选"这点上是错的）、两条候选路线、待验实验 |
 | [`docs/02-original-brief.md`](docs/02-original-brief.md) | 原始需求存档 |
 
 两条最值得先看的结论：
